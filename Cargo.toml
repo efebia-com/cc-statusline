@@ -1,0 +1,19 @@
+[package]
+name = "statusline"
+version = "0.1.0"
+edition = "2021"
+description = "Fast Rust statusline for Claude Code"
+repository = "https://github.com/efebia-com/cc-statusline"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+serde_json = "1"
+
+# Optimize the release binary for size — statusline runs constantly,
+# so smaller binary = faster cold-start (less to mmap into memory).
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
