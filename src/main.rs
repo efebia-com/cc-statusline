@@ -97,13 +97,22 @@ fn read_bridge(home: &str, session_id: &str) -> (Option<String>, Option<String>)
 /// binary, portable to Win/Mac/Linux). One row per session; `count` bumps on every
 /// render and `ts` tracks the last write, so a reader can tell a fresh-but-same-%
 /// sample from a stale one. `model`/`effort`/`cwd` snapshot the session's current
-/// model, effort level, and working dir. Every error is swallowed: the bar must
-/// render even if the DB is locked or the disk is full.
-fn persist(session_id: &str, remaining_pct: f64, model: &str, effort: &str, cwd: &str) {
+/// model, effort level, and working dir; `bridge_name`/`bridge_room` are this
+/// session's bridge identity (read by the caller, `None` when not on the bridge).
+/// Every error is swallowed: the bar must render even if the DB is locked or full.
+fn persist(
+    session_id: &str,
+    remaining_pct: f64,
+    model: &str,
+    effort: &str,
+    cwd: &str,
+    bridge_name: Option<&str>,
+    bridge_room: Option<&str>,
+) {
     if session_id.is_empty() || session_id == "?" {
         return;
     }
-    let _ = persist_inner(session_id, remaining_pct, model, effort, cwd);
+    let _ = persist_inner(session_id, remaining_pct, model, effort, cwd, bridge_name, bridge_room);
 }
 
 fn persist_inner(
@@ -112,6 +121,8 @@ fn persist_inner(
     model: &str,
     effort: &str,
     cwd: &str,
+    bridge_name: Option<&str>,
+    bridge_room: Option<&str>,
 ) -> rusqlite::Result<()> {
     // $HOME on unix, %USERPROFILE% on Windows.
     let home = std::env::var("HOME")
@@ -136,8 +147,6 @@ fn persist_inner(
     for col in ["model", "effort", "cwd", "bridge_name", "bridge_room"] {
         let _ = conn.execute(&format!("ALTER TABLE ctx ADD COLUMN {col} TEXT"), []);
     }
-    // Pull this session's bridge identity (3-letter name + current room), if any.
-    let (bridge_name, bridge_room) = read_bridge(&home, session_id);
     // count++ on every render; one row per session.
     conn.execute(
         "INSERT INTO ctx(session_id, count, ts, remaining_pct, model, effort, cwd, bridge_name, bridge_room) VALUES(?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)\
@@ -175,6 +184,9 @@ fn main() {
         _ => cwd.to_string(),
     };
 
+    // This session's bridge identity (read once here: shown in the bar + persisted).
+    let (bridge_name, bridge_room) = read_bridge(&home, session_id);
+
     let arrow = colorize("gray", "→");
     let sep   = colorize("gray", "│");
     let label = |s: &str| colorize("gray", s);
@@ -191,20 +203,27 @@ fn main() {
     // at a glance when the line was last updated. %a is the English weekday abbrev.
     let now_display = Local::now().format("%H:%M:%a").to_string();
 
-    let fields = [
+    let mut fields = vec![
         colorize("gray", &now_display),
         format!("{}{slash}{}", colorize("red", model_name), colorize("orange", effort_level)),
         format!("{} {arrow} {}", label("ctx_left"),   colorize("yellow", &format!("{context_pct:.1}%"))),
         format!("{} {arrow} {}", label("cwd"),        colorize("green",  &cwd_display)),
         format!("{} {arrow} {}", label("5h"),  colorize("blue",   &rate_5h_display)),
         format!("{} {arrow} {}", label("7d"),  colorize("blue",   &rate_7d_display)),
-        format!("{} {arrow} {}", label("id"), colorize("violet", session_id)),
     ];
+    // Bridge 3-word handle — shown only when this session is on the bridge.
+    if let Some(name) = &bridge_name {
+        fields.push(format!("{} {arrow} {}", label("bridge"), colorize("violet", name)));
+    }
+    fields.push(format!("{} {arrow} {}", label("id"), colorize("violet", session_id)));
 
     let joiner = format!(" {sep} ");
     print!("{}", fields.join(&joiner));
 
     // Persist after rendering so the visible bar is never delayed by the write.
     // Store the raw (un-folded) cwd — the canonical absolute path, not the ~ display.
-    persist(session_id, context_pct, model_name, effort_level, cwd);
+    persist(
+        session_id, context_pct, model_name, effort_level, cwd,
+        bridge_name.as_deref(), bridge_room.as_deref(),
+    );
 }

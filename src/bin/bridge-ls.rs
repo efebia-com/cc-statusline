@@ -116,7 +116,7 @@ fn main() {
         .unwrap_or(0)
         .max("room".len());
 
-    println!("{:<w_name$}  {:>w_pct$}  {:<w_room$}  {}", "bridge", "ctx", "room", "cwd");
+    println!("{:<w_name$}  {:>w_pct$}  {:<w_room$}  cwd", "bridge", "ctx", "room");
     for (name, pct, room, cwd) in &rows {
         println!("{name:<w_name$}  {pct:>w_pct$}  {room:<w_room$}  {cwd}");
     }
