@@ -1,5 +1,5 @@
 //! bridge-ls — list Claude Code sessions on the bridge with their 3-letter bridge
-//! name, context-left %, and working dir.
+//! name, context-left %, current room, and working dir.
 //!
 //! Reads `~/.claude/ctx.db` (written by the statusline, which mirrors the bridge's
 //! `sessionNames`/`sessionRooms` into the `bridge_name`/`bridge_room` columns).
@@ -60,22 +60,24 @@ fn main() {
 
     // Most recently rendered first, so live sessions surface at the top.
     let sql = if all {
-        "SELECT bridge_name, remaining_pct, cwd FROM ctx ORDER BY ts DESC"
+        "SELECT bridge_name, remaining_pct, bridge_room, cwd FROM ctx ORDER BY ts DESC"
     } else {
-        "SELECT bridge_name, remaining_pct, cwd FROM ctx WHERE bridge_name IS NOT NULL ORDER BY ts DESC"
+        "SELECT bridge_name, remaining_pct, bridge_room, cwd FROM ctx WHERE bridge_name IS NOT NULL ORDER BY ts DESC"
     };
 
     let mut stmt = conn
         .prepare(sql)
         .unwrap_or_else(|e| die(&format!("query fallita: {e}"), 1));
-    let rows: Vec<(String, String, String)> = stmt
+    let rows: Vec<(String, String, String, String)> = stmt
         .query_map([], |r| {
             let name: Option<String> = r.get(0)?;
             let pct: Option<f64> = r.get(1)?;
-            let cwd: Option<String> = r.get(2)?;
+            let room: Option<String> = r.get(2)?;
+            let cwd: Option<String> = r.get(3)?;
             Ok((
                 name.unwrap_or_else(|| "—".to_string()),
                 fmt_pct(pct),
+                room.unwrap_or_else(|| "—".to_string()),
                 cwd.map(|c| fold_home(&c, &home))
                     .unwrap_or_else(|| "?".to_string()),
             ))
@@ -94,22 +96,28 @@ fn main() {
         );
     }
 
-    // Align the name + ctx columns; cwd is last so it needs no padding.
+    // Align the name + ctx + room columns; cwd is last so it needs no padding.
     let w_name = rows
         .iter()
-        .map(|(n, _, _)| n.chars().count())
+        .map(|(n, _, _, _)| n.chars().count())
         .max()
         .unwrap_or(0)
         .max("bridge".len());
     let w_pct = rows
         .iter()
-        .map(|(_, p, _)| p.chars().count())
+        .map(|(_, p, _, _)| p.chars().count())
         .max()
         .unwrap_or(0)
         .max("ctx".len());
+    let w_room = rows
+        .iter()
+        .map(|(_, _, r, _)| r.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("room".len());
 
-    println!("{:<w_name$}  {:>w_pct$}  {}", "bridge", "ctx", "cwd");
-    for (name, pct, cwd) in &rows {
-        println!("{name:<w_name$}  {pct:>w_pct$}  {cwd}");
+    println!("{:<w_name$}  {:>w_pct$}  {:<w_room$}  {}", "bridge", "ctx", "room", "cwd");
+    for (name, pct, room, cwd) in &rows {
+        println!("{name:<w_name$}  {pct:>w_pct$}  {room:<w_room$}  {cwd}");
     }
 }
