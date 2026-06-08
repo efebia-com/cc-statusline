@@ -10,12 +10,13 @@ It also **tracks context usage over time**: on every render it upserts the sessi
 
 | Field          | Source                                          |
 | -------------- | ----------------------------------------------- |
+| `HH:MM:Day`    | local time of the last render (e.g. `15:47:Sat`) |
 | `model/effort` | `model.display_name` / `effort.level`           |
 | `ctx_left`     | `context_window.remaining_percentage`           |
 | `cwd`          | `cwd` (with `$HOME` folded to `~`)              |
-| `5h_left`      | `100 - rate_limits.five_hour.used_percentage`   |
-| `7d_left`      | `100 - rate_limits.seven_day.used_percentage`   |
-| `session_id`   | `session_id`                                    |
+| `5h`           | `100 - rate_limits.five_hour.used_percentage`   |
+| `7d`           | `100 - rate_limits.seven_day.used_percentage`   |
+| `id`           | `session_id`                                    |
 
 ## Install
 
@@ -58,6 +59,11 @@ On every render the statusline upserts one row per session into `~/.claude/ctx.d
 | `count`         | how many times the statusline has rendered       |
 | `ts`            | unix time of the last render                     |
 | `remaining_pct` | last `context_window.remaining_percentage`       |
+| `model`         | last model display name (e.g. `Opus 4.8`)        |
+| `effort`        | last effort level (e.g. `max`)                   |
+| `cwd`           | last working dir (raw absolute path)             |
+| `bridge_name`   | 3-word bridge name, mirrored from the bridge plugin (NULL if unused) |
+| `bridge_room`   | current bridge room, mirrored from the bridge plugin (NULL if none)  |
 
 Concurrent sessions write safely (WAL + `busy_timeout`); sessions idle for more than 7 days are pruned automatically. Query it with the bundled binary (also exposed as a Claude Code skill):
 
@@ -65,6 +71,9 @@ Concurrent sessions write safely (WAL + `busy_timeout`); sessions idle for more 
 ctx-left              # current session (uses $CLAUDE_CODE_SESSION_ID)
 ctx-left <uuid>       # a specific session
 ctx-left --all        # every tracked session
+
+bridge-ls             # sessions on the bridge: name · ctx-left · cwd
+bridge-ls --all       # every tracked session (blank name shown as —)
 ```
 
 Because `remaining_pct` is an integer, the same % can hide thousands of tokens of movement on a large window — so `count` + `ts` let a reader tell a *fresh* reading from a stale one even when the % hasn't ticked.
@@ -87,7 +96,7 @@ Edit `src/main.rs`:
 - **Color palette** — the `colorize` function at the top
 - **Context persistence** — the `persist` function (schema, retention window)
 
-The `ctx-left` reader is `src/bin/ctx-left.rs`. Rebuild with `cargo build --release`.
+The readers are `src/bin/ctx-left.rs` and `src/bin/bridge-ls.rs`. Rebuild with `cargo build --release`.
 
 ## License
 

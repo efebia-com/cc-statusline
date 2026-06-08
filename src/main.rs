@@ -1,5 +1,6 @@
 //! Claude Code statusline: verbose `label → value` layout with rainbow value colors.
 
+use chrono::Local;
 use rusqlite::Connection;
 use serde_json::Value;
 use std::io::{self, Read};
@@ -44,20 +45,74 @@ fn format_reset_time(resets_at: u64) -> String {
     }
 }
 
+fn format_reset_compact(resets_at: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let seconds_left = resets_at.saturating_sub(now);
+
+    let days = seconds_left / 86_400;
+    let hours = (seconds_left % 86_400) / 3_600;
+    let minutes = (seconds_left % 3_600) / 60;
+
+    if days > 0 {
+        format!("{days}d{hours}h")
+    } else if hours > 0 {
+        format!("{hours}h{minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else if seconds_left > 0 {
+        String::from("<1m")
+    } else {
+        String::from("now")
+    }
+}
+
+/// Best-effort: pull this session's bridge identity from the bridge plugin's
+/// `~/.claude/channels/bridge/config.json`. Returns `(3-letter name, current room)`,
+/// each `None` when the session isn't using the bridge (no entry) or the file is
+/// missing/unreadable. The bridge writes `sessionNames`/`sessionRooms` keyed by the
+/// same Claude session UUID the statusline gets, so no recomputation is needed.
+fn read_bridge(home: &str, session_id: &str) -> (Option<String>, Option<String>) {
+    let text = match std::fs::read_to_string(format!("{home}/.claude/channels/bridge/config.json")) {
+        Ok(text) => text,
+        Err(_) => return (None, None),
+    };
+    let cfg: Value = match serde_json::from_str(&text) {
+        Ok(cfg) => cfg,
+        Err(_) => return (None, None),
+    };
+    let lookup = |key: &str| {
+        cfg.get(key)
+            .and_then(|map| map.get(session_id))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    (lookup("sessionNames"), lookup("sessionRooms"))
+}
+
 /// Best-effort sidecar: upsert this session's context-left into `~/.claude/ctx.db`
 /// via an in-process SQLite (rusqlite, statically bundled — no external `sqlite3`
 /// binary, portable to Win/Mac/Linux). One row per session; `count` bumps on every
 /// render and `ts` tracks the last write, so a reader can tell a fresh-but-same-%
-/// sample from a stale one. Every error is swallowed: the bar must render even if
-/// the DB is locked or the disk is full.
-fn persist(session_id: &str, remaining_pct: f64) {
+/// sample from a stale one. `model`/`effort`/`cwd` snapshot the session's current
+/// model, effort level, and working dir. Every error is swallowed: the bar must
+/// render even if the DB is locked or the disk is full.
+fn persist(session_id: &str, remaining_pct: f64, model: &str, effort: &str, cwd: &str) {
     if session_id.is_empty() || session_id == "?" {
         return;
     }
-    let _ = persist_inner(session_id, remaining_pct);
+    let _ = persist_inner(session_id, remaining_pct, model, effort, cwd);
 }
 
-fn persist_inner(session_id: &str, remaining_pct: f64) -> rusqlite::Result<()> {
+fn persist_inner(
+    session_id: &str,
+    remaining_pct: f64,
+    model: &str,
+    effort: &str,
+    cwd: &str,
+) -> rusqlite::Result<()> {
     // $HOME on unix, %USERPROFILE% on Windows.
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
@@ -74,13 +129,20 @@ fn persist_inner(session_id: &str, remaining_pct: f64) -> rusqlite::Result<()> {
     // WAL + busy_timeout let concurrent sessions write safely, no external locks.
     conn.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000; PRAGMA synchronous=NORMAL;\
-         CREATE TABLE IF NOT EXISTS ctx(session_id TEXT PRIMARY KEY, count INTEGER NOT NULL, ts INTEGER NOT NULL, remaining_pct REAL);",
+         CREATE TABLE IF NOT EXISTS ctx(session_id TEXT PRIMARY KEY, count INTEGER NOT NULL, ts INTEGER NOT NULL, remaining_pct REAL, model TEXT, effort TEXT, cwd TEXT, bridge_name TEXT, bridge_room TEXT);",
     )?;
+    // Migrate DBs created before these columns existed. On an already-migrated DB each
+    // ALTER fails with "duplicate column" — expected, so each one is best-effort.
+    for col in ["model", "effort", "cwd", "bridge_name", "bridge_room"] {
+        let _ = conn.execute(&format!("ALTER TABLE ctx ADD COLUMN {col} TEXT"), []);
+    }
+    // Pull this session's bridge identity (3-letter name + current room), if any.
+    let (bridge_name, bridge_room) = read_bridge(&home, session_id);
     // count++ on every render; one row per session.
     conn.execute(
-        "INSERT INTO ctx(session_id, count, ts, remaining_pct) VALUES(?1, 1, ?2, ?3)\
-         ON CONFLICT(session_id) DO UPDATE SET count = count + 1, ts = ?2, remaining_pct = ?3",
-        rusqlite::params![session_id, ts, remaining_pct],
+        "INSERT INTO ctx(session_id, count, ts, remaining_pct, model, effort, cwd, bridge_name, bridge_room) VALUES(?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)\
+         ON CONFLICT(session_id) DO UPDATE SET count = count + 1, ts = ?2, remaining_pct = ?3, model = ?4, effort = ?5, cwd = ?6, bridge_name = ?7, bridge_room = ?8",
+        rusqlite::params![session_id, ts, remaining_pct, model, effort, cwd, bridge_name, bridge_room],
     )?;
     // prune sessions idle > 7 days (604800s).
     conn.execute(
@@ -103,7 +165,7 @@ fn main() {
     let rate_5h      = 100.0 - data["rate_limits"]["five_hour"]["used_percentage"].as_f64().unwrap_or(0.0);
     let rate_7d      = 100.0 - data["rate_limits"]["seven_day"]["used_percentage"].as_f64().unwrap_or(0.0);
     let reset_5h     = data["rate_limits"]["five_hour"]["resets_at"].as_u64().map(format_reset_time).unwrap_or_else(|| String::from("?"));
-    let reset_7d     = data["rate_limits"]["seven_day"]["resets_at"].as_u64().map(format_reset_time).unwrap_or_else(|| String::from("?"));
+    let reset_7d     = data["rate_limits"]["seven_day"]["resets_at"].as_u64().map(format_reset_compact).unwrap_or_else(|| String::from("?"));
 
     // Fold $HOME → ~
     let home = std::env::var("HOME").unwrap_or_default();
@@ -123,24 +185,26 @@ fn main() {
     } else {
         format!("{rate_5h:.0}%")
     };
-    let rate_7d_display = if rate_7d <= 20.0 {
-        format!("{rate_7d:.0}% (reset at {reset_7d})")
-    } else {
-        format!("{rate_7d:.0}%")
-    };
+    let rate_7d_display = format!("{rate_7d:.0}% ({reset_7d})");
+
+    // Render-time stamp (local): each render = a message/inject, so this shows
+    // at a glance when the line was last updated. %a is the English weekday abbrev.
+    let now_display = Local::now().format("%H:%M:%a").to_string();
 
     let fields = [
+        colorize("gray", &now_display),
         format!("{}{slash}{}", colorize("red", model_name), colorize("orange", effort_level)),
         format!("{} {arrow} {}", label("ctx_left"),   colorize("yellow", &format!("{context_pct:.1}%"))),
         format!("{} {arrow} {}", label("cwd"),        colorize("green",  &cwd_display)),
-        format!("{} {arrow} {}", label("5h_left"),  colorize("blue",   &rate_5h_display)),
-        format!("{} {arrow} {}", label("7d_left"),  colorize("blue",   &rate_7d_display)),
-        format!("{} {arrow} {}", label("session_id"), colorize("violet", session_id)),
+        format!("{} {arrow} {}", label("5h"),  colorize("blue",   &rate_5h_display)),
+        format!("{} {arrow} {}", label("7d"),  colorize("blue",   &rate_7d_display)),
+        format!("{} {arrow} {}", label("id"), colorize("violet", session_id)),
     ];
 
     let joiner = format!(" {sep} ");
     print!("{}", fields.join(&joiner));
 
     // Persist after rendering so the visible bar is never delayed by the write.
-    persist(session_id, context_pct);
+    // Store the raw (un-folded) cwd — the canonical absolute path, not the ~ display.
+    persist(session_id, context_pct, model_name, effort_level, cwd);
 }

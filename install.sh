@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Install cc-statusline (statusline + ctx-left) and wire it into Claude Code.
+# Install cc-statusline (statusline + ctx-left + bridge-ls) and wire it into Claude Code.
 #
 # From-source: requires Rust (https://rustup.rs) and a C compiler for the bundled
 # SQLite (Linux: gcc/clang; macOS: Xcode Command Line Tools). Run from a clone:
@@ -22,7 +22,7 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "==> Building + installing binaries (statusline, ctx-left) into $CARGO_BIN"
+echo "==> Building + installing binaries (statusline, ctx-left, bridge-ls) into $CARGO_BIN"
 cargo install --path "$SCRIPT_DIR" --force
 
 echo "==> Installing the ctx-left skill into $CLAUDE_DIR/skills/ctx-left"
@@ -46,4 +46,4 @@ with open(settings, "w", encoding="utf-8") as f:
     f.write("\n")
 PY
 
-echo "OK. Restart Claude Code to load the statusline.   Try it:  ctx-left --all"
+echo "OK. Restart Claude Code to load the statusline.   Try it:  ctx-left --all   ·   bridge-ls"

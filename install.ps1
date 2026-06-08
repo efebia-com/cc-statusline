@@ -1,4 +1,4 @@
-# Install cc-statusline (statusline + ctx-left) and wire it into Claude Code.
+# Install cc-statusline (statusline + ctx-left + bridge-ls) and wire it into Claude Code.
 #
 # From-source: requires Rust (https://rustup.rs) and the MSVC Build Tools (C++) for the
 # bundled SQLite. Run from a clone:
@@ -17,7 +17,7 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     throw "'cargo' not found — install Rust from https://rustup.rs"
 }
 
-Write-Host "==> Building + installing binaries (statusline, ctx-left) into $CargoBin"
+Write-Host "==> Building + installing binaries (statusline, ctx-left, bridge-ls) into $CargoBin"
 cargo install --path $ScriptDir --force
 
 Write-Host "==> Installing the ctx-left skill into $ClaudeDir\skills\ctx-left"
@@ -41,4 +41,4 @@ if ($data.PSObject.Properties.Name -contains 'statusLine') {
 }
 $data | ConvertTo-Json -Depth 20 | Set-Content -Encoding UTF8 $Settings
 
-Write-Host "OK. Restart Claude Code to load the statusline.   Try it:  ctx-left --all"
+Write-Host "OK. Restart Claude Code to load the statusline.   Try it:  ctx-left --all   ·   bridge-ls"
